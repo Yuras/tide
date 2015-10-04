@@ -1,0 +1,5 @@
+*~
+*.swp
+Makefile
+stack.yaml
+.stack-work
