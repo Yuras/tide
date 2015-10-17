@@ -15,8 +15,6 @@ import TextBuffer (TextBuffer)
 import qualified TextBuffer
 import TokenBuffer (TokenBuffer)
 import qualified TokenBuffer
-import HaskellLex (Token)
-import qualified HaskellLex
 import Span
 
 import Prelude hiding (lex, span)
@@ -24,35 +22,39 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Attoparsec.Text as Atto
 
-data Lex = Lex
+data Lex s t = Lex
   { textBuffer :: TextBuffer
-  , tokenBuffer :: TokenBuffer T
+  , tokenBuffer :: TokenBuffer (T s t)
+  , initialState :: s
+  , tokenize :: s -> Atto.Parser (s, t)
   }
 
-empty :: Lex
-empty = Lex
+empty :: (Eq t, Eq s) => s -> (s -> Atto.Parser (s, t)) -> Lex s t
+empty s tok = Lex
   { textBuffer = TextBuffer.empty
   , tokenBuffer = TokenBuffer.empty
+  , initialState = s
+  , tokenize = tok
   }
 
-type T = Item Token
+type T s t = Item s t
 
-data Item a = Item
+data Item s a = Item
   { token :: a
-  , lexerState :: HaskellLex.State
+  , lexerState :: s
   , consumedLength :: Int
   , lexerLookAhead :: Int
   }
   deriving (Eq, Show)
 
-instance Eq a => TokenBuffer.Token (Item a) where
+instance (Eq t, Eq s) => TokenBuffer.Token (Item s t) where
   consumedLength = consumedLength
   lexerLookAhead = lexerLookAhead
 
 -- | Replace the specified span with the text
 --
 -- Returns new lex and an affected span (before the change)
-replace :: Lex -> Span -> Text -> (Lex, Span)
+replace :: (Eq t, Eq s) => Lex s t -> Span -> Text -> (Lex s t, Span)
 replace lex span txt = (lex', span')
   where
   (tokenBuffer', span') = markDirty (tokenBuffer lex) span (Text.length txt)
@@ -61,7 +63,7 @@ replace lex span txt = (lex', span')
     , tokenBuffer = tokenBuffer'
     }
 
-markDirty :: TokenBuffer T -> Span -> Int -> (TokenBuffer T, Span)
+markDirty :: (Eq t, Eq s) => TokenBuffer (T s t) -> Span -> Int -> (TokenBuffer (T s t), Span)
 markDirty buf span len = (buf', span')
   where
   (lbuf, rest) = TokenBuffer.splitBefore pBefore buf
@@ -79,7 +81,7 @@ markDirty buf span len = (buf', span')
 -- | Process dirty sections if any
 --
 -- Returns affected span
-step :: Lex -> (Lex, Span)
+step :: (Eq t, Eq s) => Lex s t -> (Lex s t, Span)
 step lex | not (isDirty lex) = (lex, Span 0 0)
 step lex = (lex', Span startPos (endPos - startPos))
   where
@@ -88,7 +90,7 @@ step lex = (lex', Span startPos (endPos - startPos))
   lastState =
     case TokenBuffer.viewRight lbuf of
       Just (_, Right t) -> lexerState t
-      _ -> HaskellLex.initialState
+      _ -> initialState lex
   (_, txt) = TextBuffer.splitAt startPos (textBuffer lex)
   (mbuf, rbuf) = reparse lastState txt rest
   endPos = startPos + TokenBuffer.chars (TokenBuffer.measure mbuf)
@@ -98,7 +100,7 @@ step lex = (lex', Span startPos (endPos - startPos))
     }
 
   reparse s txtBuf tBuf =
-    let p = Atto.parse (HaskellLex.next s)
+    let p = Atto.parse (tokenize lex s)
     in go txtBuf tBuf 0 TokenBuffer.empty p 0 (100 :: Int)
 
   go _ tBuf tOff res _ _ 0 =
@@ -125,7 +127,7 @@ step lex = (lex', Span startPos (endPos - startPos))
                       Just (Right item', _)
                         | item' == item -> True
                       _ -> False
-            p' = Atto.parse (HaskellLex.next s)
+            p' = Atto.parse (tokenize lex s)
         in if TextBuffer.null txtBuf'
             then (res', TokenBuffer.empty)
             else if done
@@ -136,7 +138,7 @@ step lex = (lex', Span startPos (endPos - startPos))
     txtLLen = Text.length (TextBuffer.toText txtL)
 
 -- | Whether needs processing
-isDirty :: Lex -> Bool
+isDirty :: (Eq t, Eq s) => Lex s t -> Bool
 isDirty = TokenBuffer.dirty . TokenBuffer.measure . tokenBuffer
 
 -- | Get tokens for the span
@@ -144,7 +146,7 @@ isDirty = TokenBuffer.dirty . TokenBuffer.measure . tokenBuffer
 -- The requested span can start in the middle of a token, so we return
 -- the offset of the nearest token before the span as the first element
 -- of the tuple.
-tokens :: Lex -> Span -> (Int, [Either Int T])
+tokens :: (Eq t, Eq s) => Lex s t -> Span -> (Int, [Either Int (T s t)])
 tokens lex span = (startPos, toChunks buf)
   where
   (lbuf, rest) = TokenBuffer.splitBefore

@@ -40,7 +40,7 @@ main = do
   set scrolledWindow [containerChild := textView]
   set window [containerChild := scrolledWindow]
 
-  lexRef <- newIORef Lex.empty
+  lexRef <- newIORef (Lex.empty HaskellLex.initialState HaskellLex.next)
 
   buffer <- textViewGetBuffer textView
 
